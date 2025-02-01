@@ -133,6 +133,7 @@ class ZSetFamily {
   static void ZScan(CmdArgList args, const CommandContext& cmd_cntx);
   static void ZUnion(CmdArgList args, const CommandContext& cmd_cntx);
   static void ZUnionStore(CmdArgList args, const CommandContext& cmd_cntx);
+  static void ZDiffStore(CmdArgList args, const CommandContext& cmd_cntx);
 };
 
 }  // namespace dfly

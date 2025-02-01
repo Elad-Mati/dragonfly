@@ -2629,6 +2629,81 @@ void ZSetFamily::ZUnionStore(CmdArgList args, const CommandContext& cmd_cntx) {
   ZBooleanOperation(args, "zunionstore", true, true, cmd_cntx.tx, cmd_cntx.rb);
 }
 
+std::vector<ScoredMemberView> ZDiffInternal(CmdArgList args, const CommandContext& cmd_cntx,
+                                            size_t* maps_size_ptr = nullptr) {
+  vector<vector<ScoredMap>> maps(shard_set->size());
+
+  auto cb = [&](Transaction* t, EngineShard* shard) {
+    maps[shard->shard_id()] = OpFetch(shard, t);
+    return OpStatus::OK;
+  };
+  // cmd_cntx.tx->Execute(cb, false);
+  cmd_cntx.tx->ScheduleSingleHop(std::move(cb));
+
+  const string_view key = ArgS(args, 1);
+  const ShardId sid = Shard(key, maps.size());
+
+  if (nullptr != maps_size_ptr) {
+    *maps_size_ptr = maps.size();
+  }
+  // Extract the ScoredMap of the first key
+  auto& sm = maps[sid];
+  if (sm.empty()) {
+    return {};
+  }
+
+  auto result = std::move(sm[0]);
+  // Remove the first map since it is now stored in result
+  sm.erase(sm.begin());
+
+  auto filter = [&result](const auto& key) mutable {
+    auto it = result.find(key);
+    // Remove the key from the result if it exists
+    if (it != result.end()) {
+      result.erase(it);
+    }
+  };
+
+  // Filter out the key if it exists in the result
+  for (auto& vsm : maps) {
+    for (auto& sm : vsm) {
+      for (const auto& [key, value] : sm) {
+        filter(key);
+      }
+    }
+  }
+
+  vector<ScoredMemberView> smvec;
+  for (const auto& elem : result) {
+    smvec.emplace_back(elem.second, elem.first);
+  }
+
+  // the compiler does operate copy elision & RVO. More efficient than returning by std::move
+  return smvec;
+}
+
+void ZSetFamily::ZDiffStore(CmdArgList args, const CommandContext& cmd_cntx) {
+  CmdArgList modifiedArgs = args.subspan(1);
+  size_t maps_size = 0;
+  auto smvec = ZDiffInternal(modifiedArgs, cmd_cntx, &maps_size);
+
+  if (smvec.empty()) {
+    cmd_cntx.rb->SendLong(0);
+    return;
+  }
+
+  string_view dest_key = ArgS(args, 0);
+  auto store_cb = [&, dest_shard = Shard(dest_key, maps_size)](Transaction* t, EngineShard* shard) {
+    if (shard->shard_id() == dest_shard)
+      ZSetFamily::OpAdd(t->GetOpArgs(shard), ZSetFamily::ZParams{.override = true}, dest_key,
+                        smvec);
+    return OpStatus::OK;
+  };
+
+  cmd_cntx.tx->Execute(store_cb, true);
+  cmd_cntx.rb->SendLong(smvec.size());
+}
+
 #define HFUNC(x) SetHandler(&ZSetFamily::x)
 
 namespace acl {
@@ -2665,6 +2740,7 @@ constexpr uint32_t kZRevRank = READ | SORTEDSET | FAST;
 constexpr uint32_t kZScan = READ | SORTEDSET | SLOW;
 constexpr uint32_t kZUnion = READ | SORTEDSET | SLOW;
 constexpr uint32_t kZUnionStore = WRITE | SORTEDSET | SLOW;
+constexpr uint32_t kZDiffStore = WRITE | SORTEDSET | SLOW;
 }  // namespace acl
 
 void ZSetFamily::Register(CommandRegistry* registry) {
@@ -2711,7 +2787,8 @@ void ZSetFamily::Register(CommandRegistry* registry) {
       << CI{"ZREVRANK", CO::READONLY | CO::FAST, -3, 1, 1, acl::kZRevRank}.HFUNC(ZRevRank)
       << CI{"ZSCAN", CO::READONLY, -3, 1, 1, acl::kZScan}.HFUNC(ZScan)
       << CI{"ZUNION", CO::READONLY | CO::VARIADIC_KEYS, -3, 2, 2, acl::kZUnion}.HFUNC(ZUnion)
-      << CI{"ZUNIONSTORE", kStoreMask, -4, 3, 3, acl::kZUnionStore}.HFUNC(ZUnionStore);
+      << CI{"ZUNIONSTORE", kStoreMask, -4, 3, 3, acl::kZUnionStore}.HFUNC(ZUnionStore)
+      << CI{"ZDIFFSTORE", kStoreMask, -4, 3, 3, acl::kZDiffStore}.HFUNC(ZDiffStore);
 }
 
 }  // namespace dfly
