@@ -976,7 +976,7 @@ TEST_F(ZSetFamilyTest, BlockingIsReleased) {
     unblocking_commands.push_back({"ZINCRBY", key, "2", "x"});
     unblocking_commands.push_back({"ZINTERSTORE", key, "2", "A", "B"});
     unblocking_commands.push_back({"ZUNIONSTORE", key, "2", "C", "D"});
-    // unblocking_commands.push_back({"ZDIFFSTORE", key, "2", "A", "B"}); // unimplemented
+    unblocking_commands.push_back({"ZDIFFSTORE", key, "2", "A", "B"});
 
     for (auto& cmd : unblocking_commands) {
       RespExpr resp0;
@@ -1121,6 +1121,42 @@ TEST_F(ZSetFamilyTest, RangeStore) {
 
   resp = Run({"ZRANGE", "dest", "0", "-1"});
   EXPECT_THAT(resp, ArrLen(0));
+}
+
+TEST_F(ZSetFamilyTest, ZDiffStore) {
+  RespExpr resp;
+
+  resp = Run({"zdiffstore", "key", "0"});
+  EXPECT_THAT(resp, ErrArg("wrong number of arguments"));
+
+  EXPECT_EQ(4, CheckedInt({"zadd", "z1", "1", "one", "2", "two", "3", "three", "4", "four"}));
+  EXPECT_EQ(2, CheckedInt({"zadd", "z2", "1", "one", "5", "five"}));
+  EXPECT_EQ(2, CheckedInt({"zadd", "z3", "2", "two", "3", "three"}));
+  EXPECT_EQ(1, CheckedInt({"zadd", "z4", "4", "four"}));
+
+  resp = Run({"zdiffstore", "z5", "2", "z1", "z2"});
+  EXPECT_EQ(3, CheckedInt({"zcard", "z5"}));
+
+  resp = Run({"zrange", "z5", "0", "-1"});
+  EXPECT_THAT(resp.GetVec(), ElementsAre("two", "three", "four"));
+
+  resp = Run({"zdiffstore", "z6", "2", "z1", "doesnt_exist"});
+  EXPECT_EQ(4, CheckedInt({"zcard", "z6"}));
+
+  resp = Run({"zrange", "z6", "0", "-1"});
+  EXPECT_THAT(resp.GetVec(), ElementsAre("one", "two", "three", "four"));
+
+  resp = Run({"zdiffstore", "z7", "3", "z1", "z2", "z3"});
+  EXPECT_EQ(1, CheckedInt({"zcard", "z7"}));
+
+  resp = Run({"zrange", "z7", "0", "-1"});
+  EXPECT_THAT(resp.GetVec(), ElementsAre("four"));
+
+  resp = Run({"zdiffstore", "z8", "3", "doesnt_exist", "z2", "z3"});
+  EXPECT_EQ(0, CheckedInt({"zcard", "z8"}));
+
+  resp = Run({"zdiffstore", "z10", "2", "z1", "z1"});
+  EXPECT_EQ(0, CheckedInt({"zcard", "z10"}));
 }
 
 }  // namespace dfly
